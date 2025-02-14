@@ -5,6 +5,7 @@ from components.group import GroupOperation
 from components.gcn import GCNBlock
 from components.lstm import PointLSTM
 from components.mlp import MLPBlock
+from torch_geometric.loader import DataLoader
 
 class CompleteEnzymeModel(nn.Module):
     def __init__(self, task, use_gcn=True, use_lstm=True, use_quat=True):
@@ -193,29 +194,35 @@ class CompleteEnzymeModel(nn.Module):
             traceback.print_exc()
             return {"loss": 0.0}
 
-    def test_step(self, batch_data):
+    def test_step(self, test_data):
         self.eval()
         device = next(self.parameters()).device
         
+        # Create a DataLoader for test data
+        test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
+        all_predictions = []
+        
         try:
-            # Handle both list and single batch formats
-            if isinstance(batch_data, list):
-                data = self.move_graph_to_device(batch_data[0], device)
-            else:
-                data = self.move_graph_to_device(batch_data, device)
-            
             with torch.no_grad():
-                logits = self(data)
-                probs = F.softmax(logits, dim=-1)
-                return probs.cpu()
+                for batch in test_loader:
+                    if isinstance(batch, list):
+                        data = self.move_graph_to_device(batch[0], device)
+                    else:
+                        data = self.move_graph_to_device(batch, device)
+                        
+                    logits = self(data)
+                    # Get predicted class indices
+                    predictions = torch.argmax(logits, dim=1)
+                    all_predictions.append(predictions.cpu())
+                
+                # Concatenate all batch predictions
+                final_predictions = torch.cat(all_predictions, dim=0).numpy()
+                return final_predictions
+                
         except Exception as e:
             import traceback
             traceback.print_exc()
-            if isinstance(batch_data, list):
-                batch_size = int(batch_data[0].batch.max()) + 1
-            else:
-                batch_size = int(batch_data.batch.max()) + 1 if hasattr(batch_data, 'batch') else 1
-            return torch.zeros(batch_size, self.num_classes, device='cpu')
+            return torch.zeros(len(test_data), dtype=torch.long, device='cpu').numpy()
 
     def _get_label_from_ec(self, ec_number: str) -> int:
         try:

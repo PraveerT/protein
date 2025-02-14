@@ -10,8 +10,10 @@ def main():
 
     # Create task with protein data
     task = EnzymeClassTask().to_graph(eps=8).pyg()
+    
+    print(f"Dataset sizes: Train {len(task.train)}, Test {len(task.test)}")
 
-    # Create model and move to device
+    # Create model
     model = CompleteEnzymeModel(
         task=task,
         use_gcn=True,
@@ -21,11 +23,14 @@ def main():
 
     # Training loop
     print("Starting training...")
-    for epoch in range(1):
+    num_epochs = 10  # Increased epochs for full training
+    batch_size = 32
+    
+    for epoch in range(num_epochs):
         model.train()
         epoch_losses = []
         
-        for batch in DataLoader(task.train, batch_size=32, shuffle=True):
+        for batch in DataLoader(task.train, batch_size=batch_size, shuffle=True):
             loss_info = model.train_step(batch)
             epoch_losses.append(loss_info["loss"])
             
@@ -37,7 +42,7 @@ def main():
     model.eval()
     prediction = model.test_step(task.test)
     metrics = task.evaluate(task.test_targets, prediction)
-    print("Metrics:", metrics)
+    print("Final Metrics:", metrics)
 
 if __name__ == "__main__":
     main()
