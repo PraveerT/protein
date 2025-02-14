@@ -1,70 +1,125 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool
-from typing import Any, Dict
+from components.group import GroupOperation
+from components.mlp import MLPBlock
 
-class ComplexEnzymeModel(nn.Module):
-    def __init__(self, task):
-        super(ComplexEnzymeModel, self).__init__()
+class AdaptedEnzymeModel(nn.Module):
+    def __init__(self, task, use_gcn=True, use_lstm=True, use_quat=True):
+        super(AdaptedEnzymeModel, self).__init__()
         self.task = task
-        
-        # Model hyperparameters
-        self.hidden_dim = 64
         self.num_classes = task.num_classes
         
-        # GNN layers
-        self.conv1 = GCNConv(1, self.hidden_dim)
-        self.conv2 = GCNConv(self.hidden_dim, self.hidden_dim)
+        # Model dimensions
+        self.hidden_dim = 64
+        self.embedding_dim = 64
         
-        # Output layers
-        self.fc1 = nn.Linear(self.hidden_dim, 32)
-        self.fc2 = nn.Linear(32, self.num_classes)
+        # Node feature embedding
+        self.node_embedding = nn.Sequential(
+            nn.Linear(1, self.embedding_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.embedding_dim // 2),
+            nn.Linear(self.embedding_dim // 2, self.embedding_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.embedding_dim)
+        )
         
-        # Dropout
-        self.dropout = nn.Dropout(0.2)
+        # Group operation for neighbor features
+        self.group = GroupOperation()
         
-        # Optimizer
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        # Convolution blocks with improved architecture
+        self.conv_blocks = nn.ModuleList([
+            MLPBlock([self.embedding_dim, self.hidden_dim, self.hidden_dim], 2),
+            nn.BatchNorm2d(self.hidden_dim),
+            MLPBlock([self.hidden_dim, self.hidden_dim * 2, self.hidden_dim * 2], 2),
+            nn.BatchNorm2d(self.hidden_dim * 2)
+        ])
+        
+        # Pooling layers
+        self.pool = nn.AdaptiveMaxPool2d((None, 1))
+        
+        # Final MLP blocks with skip connections
+        self.final_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim * 2, self.hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.hidden_dim),
+            nn.Dropout(0.2),
+            nn.Linear(self.hidden_dim, self.hidden_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.hidden_dim // 2),
+            nn.Dropout(0.2),
+            nn.Linear(self.hidden_dim // 2, self.num_classes)
+        )
         
         # EC number mapping
         self.ec_map = {str(i): i-1 for i in range(1, 8)}
-
+        
+        # Optimizer
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        
     def _get_label_from_ec(self, ec_number: str) -> int:
         try:
             first_number = ec_number.split('.')[0]
             return self.ec_map[first_number]
         except:
             return 0
-
+        
     def forward(self, data):
         # Process input features
-        x = data.x.unsqueeze(1) if data.x.dim() == 1 else data.x
-        x = x.float()
+        x = data.x.float().unsqueeze(-1)
         
-        # GNN layers
-        x = self.dropout(F.relu(self.conv1(x, data.edge_index)))
-        x = F.relu(self.conv2(x, data.edge_index))
+        # Node embedding
+        x = self.node_embedding(x)
         
-        # Global pooling and MLP
-        x = global_mean_pool(x, data.batch)
-        x = self.dropout(F.relu(self.fc1(x)))
-        x = self.fc2(x)
+        # Process each graph separately
+        batch_size = int(data.batch.max()) + 1
+        outputs = []
+        
+        for i in range(batch_size):
+            # Get nodes for current graph
+            mask = (data.batch == i)
+            graph_nodes = x[mask]
+            num_nodes = graph_nodes.shape[0]
+            
+            # Process through MLP blocks directly
+            current_features = graph_nodes.t().unsqueeze(-1).unsqueeze(0)
+            
+            # Process through conv blocks
+            for layer in self.conv_blocks:
+                if isinstance(layer, MLPBlock):
+                    current_features = layer(current_features)
+                else:
+                    current_features = layer(current_features)
+            
+            # Global pooling for graph features
+            graph_embedding = current_features.mean(dim=2).squeeze()
+            outputs.append(graph_embedding)
+        
+        # Combine all graph embeddings
+        x = torch.stack(outputs)
+        
+        # Final classification
+        x = self.final_mlp(x)
         
         return x
-
-    def train_step(self, batch) -> Dict[str, float]:
+    
+    def train_step(self, batch):
         self.train()
         self.optimizer.zero_grad()
         
         try:
-            # Forward pass
-            data = batch[0] if isinstance(batch, (list, tuple)) else batch
-            out = self(data)
+            # Get data and labels
+            if isinstance(batch, list):
+                data = batch[0]
+                protein_data = batch[1]['protein']
+                labels = torch.tensor([self._get_label_from_ec(ec) for ec in protein_data['EC']], 
+                                    dtype=torch.long, device=data.x.device)
+            else:
+                data = batch
+                labels = data.y
             
-            # Get labels
-            protein_data = batch[1]['protein'] if isinstance(batch, (list, tuple)) else batch.protein
-            labels = torch.tensor([self._get_label_from_ec(ec) for ec in protein_data['EC']], dtype=torch.long)
+            # Forward pass
+            out = self(data)
             
             # Compute loss and update
             loss = F.cross_entropy(out, labels)
@@ -72,14 +127,13 @@ class ComplexEnzymeModel(nn.Module):
             self.optimizer.step()
             
             return {"loss": loss.item()}
-        except:
+        except Exception as e:
             return {"loss": 0.0}
-
+    
     def test_step(self, data):
         self.eval()
         with torch.no_grad():
             try:
-                batch_data = data[0] if isinstance(data, (list, tuple)) else data
-                return F.softmax(self(batch_data), dim=1)
+                return F.softmax(self(data), dim=1)
             except:
                 return self.task.dummy_output()
