@@ -9,7 +9,6 @@ from components.mlp import MLPBlock
 class CompleteEnzymeModel(nn.Module):
     def __init__(self, task, use_gcn=True, use_lstm=True, use_quat=True):
         super(CompleteEnzymeModel, self).__init__()
-        # [Previous init code remains the same...]
         self.task = task
         self.num_classes = task.num_classes
         self.use_gcn = use_gcn
@@ -101,7 +100,6 @@ class CompleteEnzymeModel(nn.Module):
         self.optimizer = torch.optim.AdamW(self.parameters(), lr=0.001, weight_decay=0.01)
 
     def forward(self, data):
-        # [Forward method remains the same...]
         device = next(self.parameters()).device
         
         # Node feature processing
@@ -209,7 +207,6 @@ class CompleteEnzymeModel(nn.Module):
             with torch.no_grad():
                 logits = self(data)
                 probs = F.softmax(logits, dim=-1)
-                # Move to CPU for numpy conversion
                 return probs.cpu()
         except Exception as e:
             import traceback
