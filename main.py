@@ -11,7 +11,7 @@ task = EnzymeClassTask().to_graph(eps=8).pyg()
 model = ComplexEnzymeModel(task)
 
 # Training using native data loaders
-for epoch in range(1):
+for epoch in range(20):
     # Training
     model.train()
     epoch_losses = []
