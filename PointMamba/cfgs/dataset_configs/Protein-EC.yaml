@@ -1,0 +1,11 @@
+NAME: ProteinEC
+ROOT: data/Protein512
+CLASSES: [
+    'Oxidoreductases (EC 1)',
+    'Transferases (EC 2)',
+    'Hydrolases (EC 3)',
+    'Lyases (EC 4)',
+    'Isomerases (EC 5)',
+    'Ligases (EC 6)',
+    'Translocases (EC 7)',
+]
